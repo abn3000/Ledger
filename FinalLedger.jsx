@@ -221,7 +221,7 @@ function fileToBase64(file) {
   });
 }
 
-function fileToCompressedDataUrl(file, maxDim = 900, quality = 0.82) {
+function fileToCompressedDataUrl(file, maxDim = 512, quality = 0.82) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -245,32 +245,35 @@ function fileToCompressedDataUrl(file, maxDim = 900, quality = 0.82) {
   });
 }
 
-async function analyzePlantHealth(plant, base64, mediaType) {
-  const prompt = `You are a plant health expert. This photo shows a ${plant.commonName} (${plant.sciName}), nicknamed "${plant.nickname}". Its usual care needs: ${LIGHT_LABELS[plant.light]}, watering roughly every ${plant.waterDays} days. Look closely at leaf color, spotting, wilting, growth pattern and soil if visible. Respond with ONLY valid JSON and nothing else (no markdown fences, no preamble), in exactly this shape:
-{"status":"healthy" | "minor issues" | "needs attention" | "critical","issues":["short issue phrase", "..."],"actions":["short immediate action phrase", "..."],"summary":"one sentence summary"}`;
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+async function callFeatherlessJson(prompt, base64, mediaType, { model, max_tokens = 500 } = {}) {
+  const response = await fetch("/api/ai", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: prompt },
-          ],
-        },
-      ],
+      prompt,
+      base64,
+      mediaType,
+      model,
+      max_tokens,
     }),
   });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: "AI request failed" }));
+    throw new Error(errorData.error || "AI request failed");
+  }
+
   const data = await response.json();
-  const textBlock = (data.content || []).find((c) => c.type === "text");
-  if (!textBlock) throw new Error("No response from analysis");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+  return data.result;
+}
+
+async function analyzePlantHealth(plant, base64, mediaType) {
+  const prompt = `You are a plant health expert. This photo shows a ${plant.commonName} (${plant.sciName}), nicknamed "${plant.nickname || plant.commonName}". Its usual care needs: ${LIGHT_LABELS[plant.light]}, watering roughly every ${plant.waterDays} days. Look closely at leaf color, spotting, wilting, growth pattern and soil if visible. Respond with ONLY valid JSON and nothing else (no markdown fences, no preamble), in exactly this shape:
+{"status":"healthy" | "minor issues" | "needs attention" | "critical","issues":["short issue phrase", "..."],"actions":["short immediate action phrase", "..."],"summary":"one sentence summary"}`;
+
+  return callFeatherlessJson(prompt, base64, mediaType, { max_tokens: 1000 });
 }
 
 async function identifyPlantFromPhoto(base64, mediaType) {
@@ -282,28 +285,7 @@ Respond with ONLY valid JSON and nothing else (no markdown fences, no preamble),
 {"matchId":"<id from the catalog above, or null if nothing in the catalog is a confident match>","confidence":"low" | "medium" | "high","reasoning":"one sentence explanation of the key visual traits that led to this identification","alternateIds":["<id>", "..."]}
 Include up to 2 alternateIds only if there are other plausible catalog matches worth considering. Use null for matchId only when you truly cannot narrow it to anything in the catalog.`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 700,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: prompt },
-          ],
-        },
-      ],
-    }),
-  });
-  const data = await response.json();
-  const textBlock = (data.content || []).find((c) => c.type === "text");
-  if (!textBlock) throw new Error("No response from analysis");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+  return callFeatherlessJson(prompt, base64, mediaType, { max_tokens: 300 });
 }
 
 async function analyzeLightLevel(base64, mediaType) {
@@ -315,30 +297,8 @@ async function analyzeLightLevel(base64, mediaType) {
 Respond with ONLY valid JSON and nothing else (no markdown fences, no preamble), in exactly this shape:
 {"light":"low" | "medium" | "bright-indirect" | "direct","confidence":"low" | "medium" | "high","reasoning":"one sentence explanation"}`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 500,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: prompt },
-          ],
-        },
-      ],
-    }),
-  });
-  const data2 = await response.json();
-  const textBlock2 = (data2.content || []).find((c) => c.type === "text");
-  if (!textBlock2) throw new Error("No response from analysis");
-  const cleaned2 = textBlock2.text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned2);
+  return callFeatherlessJson(prompt, base64, mediaType, { max_tokens: 500 });
 }
-
 /* ---------------------------------------------------------------------- */
 /* Storage                                                                  */
 /* ---------------------------------------------------------------------- */
@@ -470,18 +430,20 @@ const Styles = () => (
       width: 100%;
     }
     .page-eyebrow {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--sage);
-      margin-bottom: 6px;
-    }
-    .page-title {
-      font-size: 30px;
-      color: var(--text-light);
-      margin: 0 0 24px 0;
-    }
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sage);
+  margin-bottom: 6px;
+  text-align: left;
+}
+.page-title {
+  font-size: 30px;
+  color: var(--text-light);
+  margin: 0 0 24px 0;
+  text-align: left;
+}
 
     /* specimen card */
     .card {
@@ -1104,7 +1066,7 @@ function DashboardTab({ garden, overdue, soon, needsAttention, poorSpots, offSch
 
 function StatBlock({ label, value, accent }) {
   return (
-    <div className="card" style={{ flex: 1, padding: "16px 18px" }}>
+    <div className="card" style={{ flex: 1, padding: "16px 18px", textAlign: "left" }}>
       <div className="mono" style={{ fontSize: 26, fontWeight: 600, color: accent || "var(--ink-soft)" }}>{value}</div>
       <div style={{ fontSize: 12.5, opacity: 0.65, marginTop: 2 }}>{label}</div>
     </div>
@@ -1185,11 +1147,12 @@ function AddTab({ garden, onAdd, onDone }) {
     setIdPreview(URL.createObjectURL(file));
     setIdentifying(true);
     try {
-      const base64 = await fileToBase64(file);
+      const compressedDataUrl = await fileToCompressedDataUrl(file, 900, 0.8);
+      const base64 = compressedDataUrl.split(",")[1];
       const result = await identifyPlantFromPhoto(base64, file.type || "image/jpeg");
       setIdResult(result);
     } catch (err) {
-      setIdError("Couldn't read that photo clearly. Try a closer, well-lit shot of the leaves.");
+      setIdError(err?.message || "Couldn't read that photo clearly. Try a closer, well-lit shot of the leaves.");
     } finally {
       setIdentifying(false);
     }
@@ -1264,7 +1227,7 @@ function AddTab({ garden, onAdd, onDone }) {
             {identifying ? <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} /> : <Camera size={14} />}
             {identifying ? "Identifying…" : "Upload photo"}
           </button>
-          <input ref={idFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleIdentifyFile} />
+          <input ref={idFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleIdentifyFile} onClick={(e) => { e.target.value = ""; }} />
         </div>
         {idError && <p style={{ fontSize: 12.5, color: "var(--rust)" }}>{idError}</p>}
 
@@ -1415,12 +1378,13 @@ function SpotsTab({ garden, onAddSpot, onDeleteSpot, onUpdatePlant }) {
     setScanPreview(URL.createObjectURL(file));
     setScanning(true);
     try {
-      const base64 = await fileToBase64(file);
+      const compressedDataUrl = await fileToCompressedDataUrl(file, 900, 0.8);
+      const base64 = compressedDataUrl.split(",")[1];
       const result = await analyzeLightLevel(base64, file.type || "image/jpeg");
       setScanResult(result);
       if (LIGHT_LEVELS.includes(result.light)) setLight(result.light);
     } catch (err) {
-      setScanError("Couldn't read that photo clearly. Try a well-lit shot taken from where the plant would sit.");
+      setScanError(err?.message || "Couldn't read that photo clearly. Try a well-lit shot taken from where the plant would sit.");
     } finally {
       setScanning(false);
     }
@@ -1682,7 +1646,8 @@ function PlantModal({ plant, spot, spots, onClose, onUpdate, onWater, onDelete }
     setPreview(URL.createObjectURL(file));
     setAnalyzing(true);
     try {
-      const base64 = await fileToBase64(file);
+      const compressedDataUrl = await fileToCompressedDataUrl(file, 900, 0.8);
+      const base64 = compressedDataUrl.split(",")[1];
       const result = await analyzePlantHealth(plant, base64, file.type || "image/jpeg");
       const cleanedResult = {
         ...result,
@@ -1696,7 +1661,7 @@ function PlantModal({ plant, spot, spots, onClose, onUpdate, onWater, onDelete }
         healthHistory: [entry, ...(plant.healthHistory || [])].slice(0, 10),
       });
     } catch (err) {
-      setError("Couldn't read that photo clearly. Try a closer, well-lit shot.");
+      setError(err?.message || "Couldn't read that photo clearly. Try a closer, well-lit shot.");
     } finally {
       setAnalyzing(false);
     }
