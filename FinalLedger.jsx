@@ -305,22 +305,22 @@ Respond with ONLY valid JSON and nothing else (no markdown fences, no preamble),
 
 async function loadGarden() {
   try {
-    const res = await window.storage.get("garden-data", false);
-    if (res && res.value) {
-      const parsed = JSON.parse(res.value);
+    const stored = localStorage.getItem("garden-data");
+    if (stored) {
+      const parsed = JSON.parse(stored);
       return { plants: [], spots: [], photos: [], ...parsed };
     }
   } catch (e) {
-    /* key not found yet, first run */
+    console.error("Failed to load garden:", e);
   }
   return { plants: [], spots: [], photos: [] };
 }
 
 async function saveGarden(garden) {
   try {
-    await window.storage.set("garden-data", JSON.stringify(garden), false);
+    localStorage.setItem("garden-data", JSON.stringify(garden));
   } catch (e) {
-    console.error("Save failed", e);
+    console.error("Save failed:", e);
   }
 }
 
